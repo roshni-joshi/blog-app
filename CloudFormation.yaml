@@ -1,0 +1,478 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Blog Application Cloudformation'
+Parameters:
+  #CIDR blocks for vpc and subnets
+  CidrBlockForVPC:
+    Default: 21.0.0.0/16
+    Description: Cidr block for VPC
+    Type: String
+  CidrBlockForPublicSubnet1:
+    Default: 21.0.1.0/24
+    Description: Cidr block for public subnet 1
+    Type: String
+  CidrBlockForPublicSubnet2:
+    Default: 21.0.2.0/24
+    Description: Cidr block for public subnet 2
+    Type: String
+  CidrBlockForPrivateSubnet1:
+    Default: 21.0.3.0/24
+    Description: Cidr block for private subnet 1
+    Type: String
+  CidrBlockForPrivateSubnet2:
+    Default: 21.0.4.0/24
+    Description: Cidr block for private subnet 2
+    Type: String
+
+  # Lab Role ARN
+  LabRoleARN:
+    Default: arn:aws:iam::730335546483:role/LabRole
+    Description: Lab role arn
+    Type: String
+
+  # Application images
+  FrontendImage:
+    Default: 'roshnijoshi/frontend-test-ecs:latest'
+    Description: Image for frontend application
+    Type: String
+  BackendImage:
+    Default: 'roshnijoshi/backend-test-ecs:latest'
+    Description: Image for backend application
+    Type: String
+
+Resources:
+  ## All VPC configurations ##
+
+  # Creating vpc
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref CidrBlockForVPC
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+      - Key: Name
+        Value: blog-app-vpc
+  
+  # Creating internet gateway and attaching to vpc
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: VPC 
+    Properties:
+      Tags:
+      - Key: Name
+        Value: blog-app-igw 
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Creating public and private subnets in 2 zones
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref CidrBlockForPublicSubnet1
+      AvailabilityZone: !Select [ 0, !GetAZs ] 
+      Tags:
+      - Key: Name
+        Value: public-subnet-1
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref CidrBlockForPublicSubnet2
+      AvailabilityZone: !Select [ 1, !GetAZs ]
+      Tags:
+      - Key: Name
+        Value: public-subnet-2
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref CidrBlockForPrivateSubnet1
+      AvailabilityZone: !Select [ 0, !GetAZs ]
+      Tags:
+      - Key: Name
+        Value: private-subnet-1
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref CidrBlockForPrivateSubnet2
+      AvailabilityZone: !Select [ 1, !GetAZs ]
+      Tags:
+      - Key: Name
+        Value: private-subnet-2
+      
+  # Creating public route table
+  # Adding internet route through InternetGateway
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC 
+      Tags:
+      - Key: Name
+        Value: public-rt
+  PublicInternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+       RouteTableId: !Ref PublicRouteTable
+       DestinationCidrBlock: 0.0.0.0/0
+       GatewayId: !Ref InternetGateway
+  
+  # Creating NATGateway under PublicSubnet1
+  # Allocating elastic ip
+  NATGatewayElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayElasticIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+      - Key: Name
+        Value: blog-app-ngw
+
+  # Creating private route table
+  # Adding internet route through NATGateway
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: private-rt
+  PrivateInternetRoute:
+    DependsOn: NATGateway
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref NATGateway
+
+  # Associating all subnets to route tables
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  ## All security groups ##
+
+  # Load balancer security group
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http request from anywhere
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+
+  # ECS service security group
+  ECSFrontendServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http request from application loadbalancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+
+  # ECS service security group
+  ECSBackendServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http request from internal loadbalancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+ 
+  ## Load balancer configurations ##
+ 
+  # Target group
+  FrontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: blog-app-target-group-frontend
+      Port: 80
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VPC
+
+  BackendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: blog-app-target-group-backend
+      Port: 8080
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VPC
+  
+  # Load balancer
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn:
+      - InternetGateway
+    Properties: 
+      Type: application
+      Name: blog-app-lb
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+
+  # Listener for load balancer
+  FrontendHTTPListener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: "HTTP"
+
+  BackendHTTPListener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 8080
+      Protocol: "HTTP"
+
+  ## ECS Cluster configurations ##
+
+  # Creating ECS Fargate Cluster
+  ECSCluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: blog-app-cluster
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+  
+  # Frontend task definition
+  FrontendTaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: blog-app-task-def-frontend
+      RequiresCompatibilities:
+        - FARGATE
+      NetworkMode: awsvpc
+      Cpu: 1 vCPU
+      Memory: 3 GB
+      TaskRoleArn: !Ref LabRoleARN
+      ExecutionRoleArn: !Ref LabRoleARN
+      ContainerDefinitions:
+        - Name: blog-app-frontend
+          Image: !Ref FrontendImage
+          Essential: true
+          PortMappings:
+            - ContainerPort: 3000
+              Protocol: tcp
+
+  # Backend task definition
+  BackendTaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: blog-app-task-def-backend
+      RequiresCompatibilities:
+        - FARGATE
+      NetworkMode: awsvpc
+      Cpu: 1 vCPU
+      Memory: 3 GB
+      TaskRoleArn: !Ref LabRoleARN
+      ExecutionRoleArn: !Ref LabRoleARN
+      ContainerDefinitions:
+        - Name: blog-app-backend
+          Image: !Ref BackendImage
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+  
+  # Frontend ECS service
+  FrontendECSService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - FrontendHTTPListener
+    Properties:
+      ServiceName: blog-app-frontend-service
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref FrontendTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
+          SecurityGroups:
+            - !Ref ECSFrontendServiceSecurityGroup
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - TargetGroupArn: !Ref FrontendTargetGroup
+          ContainerName: blog-app-frontend
+          ContainerPort: 3000
+
+  # Backend ECS service
+  BackendECSService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - BackendHTTPListener
+    Properties:
+      ServiceName: blog-app-backend-service
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref BackendTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
+          SecurityGroups:
+            - !Ref ECSBackendServiceSecurityGroup
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - TargetGroupArn: !Ref BackendTargetGroup
+          ContainerName: blog-app-backend
+          ContainerPort: 8080
+
+  ## Lambda and SQS configurations ##
+
+  # Lambda security group
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http request from anywhere
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  # Lambda function
+  BlogAppLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: blog-app-lambda
+      Handler: csci5409.blog.app.lambda.EmailLambdaRequestHandler
+      Role: !Ref LabRoleARN
+      Code:
+        S3Bucket: blog-app-bucket-csci5409
+        S3Key: blog-app-lambda-0.0.1-SNAPSHOT.jar
+      Runtime: java17
+      Timeout: 120
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+
+  # SQS queue
+  BlogAppSQSQueue: 
+    Type: AWS::SQS::Queue
+    Properties: 
+      QueueName: blog-app-queue
+      VisibilityTimeout: 120
+  
+  # Lambda trigger from SQS queue
+  LambdaTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt BlogAppSQSQueue.Arn
+      FunctionName: !Ref BlogAppLambdaFunction
+      Enabled: true
+
+  ## DynamoDB database configurations ##
+
+  # VPC Endpoint for DynamoDB
+  VPCEndpointDynamoDB:
+    Type: 'AWS::EC2::VPCEndpoint'
+    Properties:
+      VpcEndpointType: 'Gateway'
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.dynamodb'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action:
+              - 'dynamodb:*'
+            Resource:
+              - 'arn:aws:dynamodb:us-east-1:730335546483:table/*'
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+
+  # DynamoDB Tables
+
+  UserTable:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      AttributeDefinitions: 
+        - 
+          AttributeName: "email"
+          AttributeType: "S"
+      KeySchema: 
+        - 
+          AttributeName: "email"
+          KeyType: "HASH"
+      ProvisionedThroughput: 
+        ReadCapacityUnits: "5"
+        WriteCapacityUnits: "5"
+      TableName: "user" 
+
+  BlogTable:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      AttributeDefinitions: 
+        - 
+          AttributeName: "blogId"
+          AttributeType: "S"
+      KeySchema: 
+        - 
+          AttributeName: "blogId"
+          KeyType: "HASH"
+      ProvisionedThroughput: 
+        ReadCapacityUnits: "5"
+        WriteCapacityUnits: "5"
+      TableName: "blog" 

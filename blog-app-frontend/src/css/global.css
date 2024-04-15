@@ -1,0 +1,9 @@
+.content-center {
+  display: flex;
+  justify-content: center;
+}
+
+.content-end {
+  display: flex;
+  justify-content: end;
+}
