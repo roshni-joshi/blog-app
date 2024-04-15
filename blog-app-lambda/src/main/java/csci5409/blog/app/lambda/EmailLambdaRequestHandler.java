@@ -27,8 +27,8 @@ public class EmailLambdaRequestHandler implements RequestHandler<SQSEvent, Strin
 		
 		String[] messageData = message.split(":::");
 		
-		System.setProperty("aws.accessKeyId", "AKIugfccUT66W26BFNNC");
-		System.setProperty("aws.secretAccessKey", "HvLv9f8Is3xbqqJVFdsaqrrefPRWlohAUnwTc3st/");
+		System.setProperty("aws.accessKeyId", "");
+		System.setProperty("aws.secretAccessKey", "");
 
 		Region region = Region.US_EAST_1;
 		System.out.println("Region : " + region);
